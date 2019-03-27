@@ -232,72 +232,12 @@ if __name__ == "__main__":
             'v': 2
         }
 
-    stop = False
     threshold = args.threshold
+    max_threshold = args.max_threshold
     pid = os.getpid()
 
-    def run(options):
-        global stop
-        model = RAE(options)
-        model.train(seqs, mask)
-        stop = True
+    model = RAE(options)
+    from mem_monitor import monitor
+    monitor(model, "train", pid, threshold=threshold, max_threshold=max_threshold, params=(seqs, mask))
 
-    def mem_monitor(pid, max_threshold):
-        import psutil
-        global threshold
-        global stop
-        while not stop:
-            p1 = psutil.Process(pid)
-            mem = p1.memory_full_info()[0] / 1024 ** 3
-            # print("\n" + "#" * 30)
-            # print("mem: %.3fG" % (mem))
-            # print("#" * 30)
-            if mem > threshold:
-                threshold *= 1.1
-                if threshold > max_threshold:
-                    threshold = max_threshold
-                print('')
-                print("# pid:", pid)
-                print("# update threshold to %.3fG" % threshold)
-                print("# need more %.3fG" % (threshold-mem))
-                os.system("kill -19 %s" % pid)
-            import time
-            time.sleep(3)
 
-    _task = Thread(target=run, args=[options], name="task")
-    _mem = Thread(target=mem_monitor, args=[pid, args.max_threshold], name="memory_monitor")
-    _task.start()
-    _mem.start()
-    _task.join()
-    _mem.join()
-
-    # model = RAE(options)
-    # if not args.datetime:
-    #     model.train(seqs, mask)
-    # if args.test:
-    #     # test = [[1, 2], [1, 2, 3], [1, 2, 3 ,4], [1, 2, 3, 4, 5], [4, 3, 2, 1], [4, 3, 2], [3, 2, 1]]
-    #     test = [[1, 2, 3], [1, 2, 3, 4], [2, 3, 4], [3, 2, 1]]
-    #     # test = [[0,0,0,0,0,0,0,0,0,0,0,0], [1,2,3,4,5,6,7,8], [1,2,3,4,5,6,7], [1,2,3,4,5,6,8,7], [1,2,3,4,5],[1,2,3,4],[1,2,3],[3,2,1],[4,2,1],[2,1]]
-    #
-    #     test_seqs = []
-    #     test_seqs = test
-    #
-    #     test_mask = np.zeros((len(test), options["max_seq_length"] - 1))
-    #     for k, _ in enumerate(test):
-    #         test_seq = []
-    #         for t, i in enumerate(_):
-    #             # test_seq.append(types[i])
-    #             try:
-    #                 _t = t-1 if t-1 > 0 else 0
-    #                 test_mask[k][t] = 1.
-    #             except:
-    #                 continue
-    #         # test_seqs.append(test_seq)
-    #
-    #     # test_max_seq_len = max([len(_) for _ in test])
-    #     result = model.transform(test_seqs, test_mask)
-    #     for _ in range(len(test_seqs)):
-    #         for i in range(_ + 1, len(test_seqs)):
-    #             print(_, i, get_similarity(result[_], result[i]))
-
-    # import pdb;pdb.set_trace();

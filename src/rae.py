@@ -15,12 +15,15 @@ class RAE:
         self.options = options
         self.time = options.get("dateTime", datetime.strftime(datetime.now(), "%y%m%d_%H%M%S"))
 
+        self.graph = tf.get_default_graph()
+
         # model-params
-        self.L = None
-        self.W_1 = None
-        self.W_2 = None
-        self.b_1 = None
-        self.b_2 = None
+        with self.graph.as_default():
+            self.L = None
+            self.W_1 = None
+            self.W_2 = None
+            self.b_1 = None
+            self.b_2 = None
         # model-property
         self.p = None
         self.modelname = None
@@ -53,75 +56,77 @@ class RAE:
 
 
     def build_model(self, options):
+        with self.graph.as_default():
+            input = tf.placeholder(tf.float32, [None, options["max_seq_length"], options["inputSize"]], name="input")
+            # input = tf.transpose(input, perm=[1, 0, 2])
+            inputLayer = tf.einsum("jkl,lm->jkm", input, self.L, name="inputLayer")
+            # inputLayer = tf.matmul(input, self.L)
+            mask = tf.placeholder(tf.float32, [None, options["max_seq_length"] - 1], name="mask")
+            # mask = tf.transpose(mask, perm=[1, 0, 2])
 
-        input = tf.placeholder(tf.float32, [None, options["max_seq_length"], options["inputSize"]], name="input")
-        # input = tf.transpose(input, perm=[1, 0, 2])
-        inputLayer = tf.einsum("jkl,lm->jkm", input, self.L, name="inputLayer")
-        # inputLayer = tf.matmul(input, self.L)
-        mask = tf.placeholder(tf.float32, [None, options["max_seq_length"] - 1], name="mask")
-        # mask = tf.transpose(mask, perm=[1, 0, 2])
+            p = tf.nn.relu(
+                tf.nn.bias_add(tf.einsum("jl,lm->jm", tf.concat([inputLayer[:, 0], inputLayer[:, 1]], 1), self.W_1),
+                               self.b_1), name="p")
+            p = tf.div(p, tf.reshape(tf.norm(p, axis=1), (-1, 1)))
 
-        p = tf.nn.relu(
-            tf.nn.bias_add(tf.einsum("jl,lm->jm", tf.concat([inputLayer[:, 0], inputLayer[:, 1]], 1), self.W_1),
-                           self.b_1), name="p")
-        p = tf.div(p, tf.reshape(tf.norm(p, axis=1), (-1, 1)))
+            self.p = [p]
 
-        self.p = [p]
-
-        c_ = tf.nn.relu(tf.nn.bias_add(tf.einsum("jl,lm->jm", p, self.W_2), self.b_2), name="c_")
-        c1 = c_[:, :options["embSize"]]
-        c2 = c_[:, options["embSize"]:]
-
-        cost = [tf.add(tf.reduce_mean(tf.square(tf.subtract(c1, inputLayer[:, 0])) / 2, axis=1),
-                       tf.reduce_mean(tf.square(tf.subtract(c2, inputLayer[:, 1])) / 2, axis=1))]
-
-        for _ in range(2, options["max_seq_length"]):
-            c = tf.concat([inputLayer[:, _], p], 1)
-            p_ = tf.nn.relu(tf.nn.bias_add(tf.einsum("jk,kl->jl", c, self.W_1), self.b_1), name="p_")
-            c_ = tf.nn.relu(tf.nn.bias_add(tf.einsum("jk,kl->jl", p_, self.W_2), self.b_2), name="c_")
+            c_ = tf.nn.relu(tf.nn.bias_add(tf.einsum("jl,lm->jm", p, self.W_2), self.b_2), name="c_")
             c1 = c_[:, :options["embSize"]]
             c2 = c_[:, options["embSize"]:]
-            cost_ = tf.add((1 / (1 + _) * tf.reduce_mean(tf.square(tf.subtract(c1, inputLayer[:, _])), axis=1)),
-                           (_ / (1 + _) * tf.reduce_mean(tf.square(tf.subtract(c2, p)), axis=1)), name="cost_")
-            p = p_
-            cost = tf.concat([cost, [cost_]], 0)
-            self.p = tf.concat([self.p, [p]], 0)
 
-        cost = tf.transpose(cost, perm=[1, 0], name="cost")
-        all_cost = tf.reduce_sum(cost * mask, axis=1) / tf.reduce_sum(mask, axis=1, name="all_cost")
-        optimizer = tf.train.AdadeltaOptimizer().minimize(all_cost)
+            cost = [tf.add(tf.reduce_mean(tf.square(tf.subtract(c1, inputLayer[:, 0])) / 2, axis=1),
+                           tf.reduce_mean(tf.square(tf.subtract(c2, inputLayer[:, 1])) / 2, axis=1))]
+
+            for _ in range(2, options["max_seq_length"]):
+                c = tf.concat([inputLayer[:, _], p], 1)
+                p_ = tf.nn.relu(tf.nn.bias_add(tf.einsum("jk,kl->jl", c, self.W_1), self.b_1), name="p_")
+                c_ = tf.nn.relu(tf.nn.bias_add(tf.einsum("jk,kl->jl", p_, self.W_2), self.b_2), name="c_")
+                c1 = c_[:, :options["embSize"]]
+                c2 = c_[:, options["embSize"]:]
+                cost_ = tf.add((1 / (1 + _) * tf.reduce_mean(tf.square(tf.subtract(c1, inputLayer[:, _])), axis=1)),
+                               (_ / (1 + _) * tf.reduce_mean(tf.square(tf.subtract(c2, p)), axis=1)), name="cost_")
+                p = p_
+                cost = tf.concat([cost, [cost_]], 0)
+                self.p = tf.concat([self.p, [p]], 0)
+
+            cost = tf.transpose(cost, perm=[1, 0], name="cost")
+            all_cost = tf.reduce_sum(cost * mask, axis=1) / tf.reduce_sum(mask, axis=1, name="all_cost")
+            optimizer = tf.train.AdadeltaOptimizer().minimize(all_cost)
 
         return input, mask, all_cost, optimizer
 
     def train(self, data, m):
-        self.trained = True
-        input, mask, cost, optimizer = self.build_model(self.options)
-        init = tf.global_variables_initializer()
 
-        self.sess.run(init)
-        # sess.graph.finalize()
-        cost_epochs = 0
-        for epoch in range(self.options["num_epochs"]):
-            cost_epoch = 0
-            train, test, train_mask, test_mask = train_test_split(data, m, shuffle=True)
+        with self.graph.as_default():
+            self.trained = True
+            input, mask, cost, optimizer = self.build_model(self.options)
+            init = tf.global_variables_initializer()
+
+            self.sess.run(init)
+            # sess.graph.finalize()
+            cost_epochs = 0
+            for epoch in range(self.options["num_epochs"]):
+                cost_epoch = 0
+                train, test, train_mask, test_mask = train_test_split(data, m, shuffle=True)
+                import math
+                for batch in range(int(math.ceil(len(train) / self.options["batch_size"]))):
+                    seqs = train[batch: (batch + 1) * self.options["batch_size"]]
+                    M = train_mask[batch: (batch + 1) * self.options["batch_size"]]
+
+                    X = self.seq2matrix(seqs)
+
+                    cost_batch, _ = self.sess.run([cost, optimizer], feed_dict={input: X, mask: M})
+                    cost_epoch += np.sum(cost_batch) / self.options["batch_size"]
+
+                cost_epochs += cost_epoch
+                if self.options['v'] == 2:
+                    print("#epoch {epoch} - cost: {cost_epoch}".format(epoch=epoch, cost_epoch=cost_epoch))
             import math
-            for batch in range(int(math.ceil(len(train) / self.options["batch_size"]))):
-                seqs = train[batch: (batch + 1) * self.options["batch_size"]]
-                M = train_mask[batch: (batch + 1) * self.options["batch_size"]]
-
-                X = self.seq2matrix(seqs)
-
-                cost_batch, _ = self.sess.run([cost, optimizer], feed_dict={input: X, mask: M})
-                cost_epoch += np.sum(cost_batch) / self.options["batch_size"]
-
-            cost_epochs += cost_epoch
-            if self.options['v'] == 2:
-                print("#epoch {epoch} - cost: {cost_epoch}".format(epoch=epoch, cost_epoch=cost_epoch))
-        import math
-        print("{num_epochs} epochs - cost: {cost_epochs}".format(num_epochs=self.options["num_epochs"],
-                                                                 cost_epochs=math.ceil(
-                                                                     cost_epochs / self.options["num_epochs"])))
-        self.save()
+            print("{num_epochs} epochs - cost: {cost_epochs}".format(num_epochs=self.options["num_epochs"],
+                                                                     cost_epochs=math.ceil(
+                                                                         cost_epochs / self.options["num_epochs"])))
+            self.save()
 
     def seq2matrix(self, seqs):
         X = np.zeros((len(seqs), self.options["max_seq_length"], self.options["inputSize"]), dtype=np.float32)
@@ -168,12 +173,14 @@ def get_similarity(a, b):
 if __name__ == "__main__":
 
     parse = argparse.ArgumentParser()
-    parse.add_argument("-n", dest="num_epochs", type=int, default=0)
-    parse.add_argument("-b", dest="batch_size", type=int, default=0)
-    parse.add_argument("-e", dest="embSize", type=int, default=0)
-    parse.add_argument("-w", dest="W", type=int, default=0)
+    parse.add_argument("-n", dest="num_epochs", type=int, default=100)
+    parse.add_argument("-b", dest="batch_size", type=int, default=100)
+    parse.add_argument("-e", dest="embSize", type=int, default=100)
+    parse.add_argument("-w", dest="W", type=int, default=100)
     parse.add_argument("-t", dest="datetime", type=str, default=None)
     parse.add_argument("--test", dest="test", action="store_true", default=False)
+    parse.add_argument("--threshold", dest="threshold", help="rss memory threshold (G) [default: 100.0G]", type=float, default=100.0)
+    parse.add_argument("--max-threshold", dest="max_threshold",help="max rss memory threshold updated to (G) [default: 200.0G]", type=float, default=200.0)
     args = parse.parse_args()
 
     import pickle
@@ -225,33 +232,11 @@ if __name__ == "__main__":
             'v': 2
         }
 
+    threshold = args.threshold
+    max_threshold = args.max_threshold
+    pid = os.getpid()
+
     model = RAE(options)
-    if not args.datetime:
-        model.train(seqs, mask)
-    if args.test:
-        # test = [[1, 2], [1, 2, 3], [1, 2, 3 ,4], [1, 2, 3, 4, 5], [4, 3, 2, 1], [4, 3, 2], [3, 2, 1]]
-        test = [[1, 2, 3], [1, 2, 3, 4], [2, 3, 4], [3, 2, 1]]
-        # test = [[0,0,0,0,0,0,0,0,0,0,0,0], [1,2,3,4,5,6,7,8], [1,2,3,4,5,6,7], [1,2,3,4,5,6,8,7], [1,2,3,4,5],[1,2,3,4],[1,2,3],[3,2,1],[4,2,1],[2,1]]
+    from mem_monitor import monitor
+    monitor(model, "train", pid, threshold=threshold, max_threshold=max_threshold, params=(seqs, mask))
 
-        test_seqs = []
-        test_seqs = test
-
-        test_mask = np.zeros((len(test), options["max_seq_length"] - 1))
-        for k, _ in enumerate(test):
-            test_seq = []
-            for t, i in enumerate(_):
-                # test_seq.append(types[i])
-                try:
-                    _t = t-1 if t-1 > 0 else 0
-                    test_mask[k][t] = 1.
-                except:
-                    continue
-            # test_seqs.append(test_seq)
-
-        # test_max_seq_len = max([len(_) for _ in test])
-        result = model.transform(test_seqs, test_mask)
-        for _ in range(len(test_seqs)):
-            for i in range(_ + 1, len(test_seqs)):
-                print(_, i, get_similarity(result[_], result[i]))
-
-    # import pdb;pdb.set_trace();

@@ -42,6 +42,7 @@ class AttentionModel:
         self.EOS = 0
         self.GO = 0
         self.is_summaries = self.options["is_summaries"]
+        self.graph = tf.get_default_graph()
 
         self.time = options.get("dateTime", datetime.strftime(datetime.now(), "%y%m%d_%H%M%S"))
         self.modelname = "attn_%s.model" % (self.time)
@@ -65,64 +66,64 @@ class AttentionModel:
             return sess
 
     def build_model(self):
+        with self.graph.as_default():
+            self.encoder_inputs = tf.placeholder(tf.int32, shape=[None, None], name='encoder_inputs')
+            self.decoder_inputs = tf.placeholder(tf.int32, shape=[None, None], name='decoder_inputs')
+            self.decoder_targets = tf.placeholder(tf.int32, shape=[None, None], name='decoder_targets')
+            self.encoder_length = tf.placeholder(tf.int32, shape=[None], name='encoder_length')
+            self.decoder_length = tf.placeholder(tf.int32, shape=[None], name='decoder_length')
 
-        self.encoder_inputs = tf.placeholder(tf.int32, shape=[None, None], name='encoder_inputs')
-        self.decoder_inputs = tf.placeholder(tf.int32, shape=[None, None], name='decoder_inputs')
-        self.decoder_targets = tf.placeholder(tf.int32, shape=[None, None], name='decoder_targets')
-        self.encoder_length = tf.placeholder(tf.int32, shape=[None], name='encoder_length')
-        self.decoder_length = tf.placeholder(tf.int32, shape=[None], name='decoder_length')
+            with tf.variable_scope("embedding"):
+                encoder_embedding = tf.Variable(tf.truncated_normal(shape=[self.options["vocab_size"], self.options["embedding_dim"]], name='encoder_embedding'))
+                decoder_embedding = tf.Variable(tf.truncated_normal(shape=[self.options["vocab_size"], self.options["embedding_dim"]], name='decoder_embedding'))
 
-        with tf.variable_scope("embedding"):
-            encoder_embedding = tf.Variable(tf.truncated_normal(shape=[self.options["vocab_size"], self.options["embedding_dim"]], name='encoder_embedding'))
-            decoder_embedding = tf.Variable(tf.truncated_normal(shape=[self.options["vocab_size"], self.options["embedding_dim"]], name='decoder_embedding'))
+            self.encoder_inputs_embedded = tf.nn.embedding_lookup(encoder_embedding, self.encoder_inputs)
+            self.decoder_inputs_embedded = tf.nn.embedding_lookup(decoder_embedding, self.decoder_inputs)
 
-        self.encoder_inputs_embedded = tf.nn.embedding_lookup(encoder_embedding, self.encoder_inputs)
-        self.decoder_inputs_embedded = tf.nn.embedding_lookup(decoder_embedding, self.decoder_inputs)
+            with tf.name_scope("encoder"):
+                encoder_layers = [tf.nn.rnn_cell.BasicLSTMCell(self.options["cell_size"]) for _ in range(2)]
+                encoder = tf.nn.rnn_cell.MultiRNNCell(encoder_layers)
+                encoder_all_outputs, encoder_final_state = tf.nn.dynamic_rnn(encoder, self.encoder_inputs_embedded, sequence_length=self.encoder_length, dtype=tf.float32, time_major=False)
+                if self.is_summaries:
+                    tf.summary.histogram('encoder_all_outputs', encoder_all_outputs)
 
-        with tf.name_scope("encoder"):
-            encoder_layers = [tf.nn.rnn_cell.BasicLSTMCell(self.options["cell_size"]) for _ in range(2)]
-            encoder = tf.nn.rnn_cell.MultiRNNCell(encoder_layers)
-            encoder_all_outputs, encoder_final_state = tf.nn.dynamic_rnn(encoder, self.encoder_inputs_embedded, sequence_length=self.encoder_length, dtype=tf.float32, time_major=False)
-            if self.is_summaries:
-                tf.summary.histogram('encoder_all_outputs', encoder_all_outputs)
-
-        with tf.name_scope("decoder"):
-            decoder_layers = [tf.nn.rnn_cell.BasicLSTMCell(self.options["cell_size"]) for _ in range(2)]
-            decoder_cell = tf.nn.rnn_cell.MultiRNNCell(decoder_layers)
-            attention_mechanism = LuongAttention(num_units=self.options["cell_size"], memory=encoder_all_outputs, memory_sequence_length=self.encoder_length)
-            attention_decoder = AttentionWrapper(cell=decoder_cell, attention_mechanism=attention_mechanism, alignment_history=True, output_attention=True)
-            attention_initial_state = attention_decoder.zero_state(tf.shape(self.encoder_inputs)[0], tf.float32).clone(cell_state=encoder_final_state)
-            train_helper = TrainingHelper(self.decoder_inputs_embedded, self.decoder_length)
-            fc_layer = tf.layers.Dense(self.options["vocab_size"])
-            train_decoder = BasicDecoder(cell=attention_decoder, helper=train_helper, initial_state=attention_initial_state, output_layer=fc_layer)
-            logits, final_state, final_sequence_lengths = dynamic_decode(train_decoder)
-            decoder_logits = logits.rnn_output
-            self.train_attention_matrices = final_state.alignment_history.stack(name="train_attention_matrix")
-            if self.is_summaries:
-                tf.summary.histogram('decoder_logits', decoder_logits)
-                tf.summary.histogram('train_attention_matrix', self.train_attention_matrices)
+            with tf.name_scope("decoder"):
+                decoder_layers = [tf.nn.rnn_cell.BasicLSTMCell(self.options["cell_size"]) for _ in range(2)]
+                decoder_cell = tf.nn.rnn_cell.MultiRNNCell(decoder_layers)
+                attention_mechanism = LuongAttention(num_units=self.options["cell_size"], memory=encoder_all_outputs, memory_sequence_length=self.encoder_length)
+                attention_decoder = AttentionWrapper(cell=decoder_cell, attention_mechanism=attention_mechanism, alignment_history=True, output_attention=True)
+                attention_initial_state = attention_decoder.zero_state(tf.shape(self.encoder_inputs)[0], tf.float32).clone(cell_state=encoder_final_state)
+                train_helper = TrainingHelper(self.decoder_inputs_embedded, self.decoder_length)
+                fc_layer = tf.layers.Dense(self.options["vocab_size"])
+                train_decoder = BasicDecoder(cell=attention_decoder, helper=train_helper, initial_state=attention_initial_state, output_layer=fc_layer)
+                logits, final_state, final_sequence_lengths = dynamic_decode(train_decoder)
+                decoder_logits = logits.rnn_output
+                self.train_attention_matrices = final_state.alignment_history.stack(name="train_attention_matrix")
+                if self.is_summaries:
+                    tf.summary.histogram('decoder_logits', decoder_logits)
+                    tf.summary.histogram('train_attention_matrix', self.train_attention_matrices)
 
 
-        with tf.name_scope("train"):
-            maxlen = tf.reduce_max(self.decoder_length, name="mask_max_len")
-            mask = tf.sequence_mask(self.decoder_length, maxlen=maxlen, dtype=tf.float32, name="mask")
-            decoder_labels = tf.one_hot(self.decoder_targets, depth=self.options["vocab_size"], dtype=tf.int32, name="decoder_labels")
-            stepwise_cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=decoder_labels, logits=decoder_logits, name="cross_entropy")
-            _loss = tf.multiply(stepwise_cross_entropy, mask)
-            self.loss = tf.reduce_sum(_loss, name="loss")
-            optimizer = tf.train.AdadeltaOptimizer()
-            self.train_op = optimizer.minimize(self.loss)
-            if self.is_summaries:
-                tf.summary.histogram('loss', self.loss)
+            with tf.name_scope("train"):
+                maxlen = tf.reduce_max(self.decoder_length, name="mask_max_len")
+                mask = tf.sequence_mask(self.decoder_length, maxlen=maxlen, dtype=tf.float32, name="mask")
+                decoder_labels = tf.one_hot(self.decoder_targets, depth=self.options["vocab_size"], dtype=tf.int32, name="decoder_labels")
+                stepwise_cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=decoder_labels, logits=decoder_logits, name="cross_entropy")
+                _loss = tf.multiply(stepwise_cross_entropy, mask)
+                self.loss = tf.reduce_sum(_loss, name="loss")
+                optimizer = tf.train.AdadeltaOptimizer()
+                self.train_op = optimizer.minimize(self.loss)
+                if self.is_summaries:
+                    tf.summary.histogram('loss', self.loss)
 
-        with tf.name_scope("inference"):
-            start_tokens = tf.tile([self.GO], [self.options["batch_size"]])
-            inference_helper = GreedyEmbeddingHelper(embedding=decoder_embedding, start_tokens=start_tokens, end_token=self.EOS)
-            inference_decoder = BasicDecoder(cell=attention_decoder, helper=inference_helper, initial_state=attention_initial_state, output_layer=fc_layer)
-            inference_ouputs, final_inference_state, _ = dynamic_decode(inference_decoder)
-            self.inference_attention_matrices = final_inference_state.alignment_history.stack(name="inference_attention_matrix")
+            with tf.name_scope("inference"):
+                start_tokens = tf.tile([self.GO], [self.options["batch_size"]])
+                inference_helper = GreedyEmbeddingHelper(embedding=decoder_embedding, start_tokens=start_tokens, end_token=self.EOS)
+                inference_decoder = BasicDecoder(cell=attention_decoder, helper=inference_helper, initial_state=attention_initial_state, output_layer=fc_layer)
+                inference_ouputs, final_inference_state, _ = dynamic_decode(inference_decoder)
+                self.inference_attention_matrices = final_inference_state.alignment_history.stack(name="inference_attention_matrix")
 
-        self.merged = tf.summary.merge_all()
+            self.merged = tf.summary.merge_all()
 
     def rnnCell(self):
         # rnn cell(s)
@@ -135,55 +136,55 @@ class AttentionModel:
         return cell
 
     def train(self, data):
+        with self.graph.as_default():
+            print("# start building model")
+            self.build_model()
+            self.sess.run(tf.global_variables_initializer())
 
-        print("# start building model")
-        self.build_model()
-        self.sess.run(tf.global_variables_initializer())
+            fwriter = tf.summary.FileWriter(self.FWpath, self.sess.graph)
 
-        fwriter = tf.summary.FileWriter(self.FWpath, self.sess.graph)
+            print("# finish building model")
+            print("# start training")
+            # self.sess.graph.finalize()
+            loss_epochs = 0
+            for e in range(self.options["num_epochs"]):
+                print("# epoch %d" % e)
+                loss_epoch = 0
+                inds = np.arange(data.shape[0])
+                np.random.shuffle(inds)
+                import math
+                for batch in tqdm(range(int(math.ceil(data.shape[0] / self.options["batch_size"])))):
+                    seqs = data[inds[batch * self.options["batch_size"]: (batch + 1) * self.options["batch_size"]]]
+                    e_data, e_len, d_data_in, d_data_out, d_len = get_seqs_input(seqs)
+                    feed = {
+                        self.encoder_inputs: e_data,
+                        self.decoder_inputs: d_data_in,
+                        self.decoder_targets: d_data_out,
+                        self.encoder_length: e_len,
+                        self.decoder_length: d_len
+                    }
+                    if self.is_summaries:
+                        run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                        run_metadata = tf.RunMetadata()
+                        attn_, loss_, merged_,  _ = self.sess.run([self.train_attention_matrices, self.loss, self.merged, self.train_op], feed_dict=feed, run_metadata=run_metadata, options=run_options)
+                        if batch % 10 == 0:
+                            fwriter.add_run_metadata(run_metadata, '# step %s' % str(e*self.options["batch_size"]+batch))
+                            fwriter.add_summary(merged_, e*self.options["batch_size"]+batch)
+                    else:
+                        attn_, loss_,  _ = self.sess.run([self.train_attention_matrices, self.loss, self.train_op], feed_dict=feed)
+                    loss_epoch += np.sum(loss_) / self.options["batch_size"]
+                loss_epochs += loss_epoch
 
-        print("# finish building model")
-        print("# start training")
-        # self.sess.graph.finalize()
-        loss_epochs = 0
-        for e in range(self.options["num_epochs"]):
-            print("# epoch %d" % e)
-            loss_epoch = 0
-            inds = np.arange(data.shape[0])
-            np.random.shuffle(inds)
+                self.save(global_step=self.options["num_epochs"])
+
+                if self.options['v'] == 2:
+                    print("#epoch {epoch} - cost: {cost_epoch}".format(epoch=e+1, cost_epoch=loss_epoch))
             import math
-            for batch in tqdm(range(int(math.ceil(data.shape[0] / self.options["batch_size"])))):
-                seqs = data[inds[batch * self.options["batch_size"]: (batch + 1) * self.options["batch_size"]]]
-                e_data, e_len, d_data_in, d_data_out, d_len = get_seqs_input(seqs)
-                feed = {
-                    self.encoder_inputs: e_data,
-                    self.decoder_inputs: d_data_in,
-                    self.decoder_targets: d_data_out,
-                    self.encoder_length: e_len,
-                    self.decoder_length: d_len
-                }
-                if self.is_summaries:
-                    run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-                    run_metadata = tf.RunMetadata()
-                    attn_, loss_, merged_,  _ = self.sess.run([self.train_attention_matrices, self.loss, self.merged, self.train_op], feed_dict=feed, run_metadata=run_metadata, options=run_options)
-                    if batch % 10 == 0:
-                        fwriter.add_run_metadata(run_metadata, '# step %s' % str(e*self.options["batch_size"]+batch))
-                        fwriter.add_summary(merged_, e*self.options["batch_size"]+batch)
-                else:
-                    attn_, loss_,  _ = self.sess.run([self.train_attention_matrices, self.loss, self.train_op], feed_dict=feed)
-                loss_epoch += np.sum(loss_) / self.options["batch_size"]
-            loss_epochs += loss_epoch
+            print("{num_epochs} epochs - cost: {cost_epochs}".format(num_epochs=self.options["num_epochs"],
+                                                                     cost_epochs=math.ceil(
+                                                                         loss_epochs / self.options["num_epochs"])))
 
-            self.save(global_step=self.options["num_epochs"])
-
-            if self.options['v'] == 2:
-                print("#epoch {epoch} - cost: {cost_epoch}".format(epoch=e+1, cost_epoch=loss_epoch))
-        import math
-        print("{num_epochs} epochs - cost: {cost_epochs}".format(num_epochs=self.options["num_epochs"],
-                                                                 cost_epochs=math.ceil(
-                                                                     loss_epochs / self.options["num_epochs"])))
-
-        self.trained = True
+            self.trained = True
 
 
     def save(self, global_step):
@@ -293,40 +294,10 @@ if __name__ == "__main__":
             "is_summaries": args.is_summaries
         }
 
-    stop = False
     threshold = args.threshold
+    max_threshold = args.max_threshold
     pid = os.getpid()
 
-    def run(options):
-        global stop
-        model = AttentionModel(options)
-        model.train(data)
-        stop = True
-
-    def mem_monitor(pid, max_threshold):
-        import psutil
-        global threshold
-        global stop
-        while not stop:
-            p1 = psutil.Process(pid)
-            mem = p1.memory_full_info()[0] / 1024 ** 3
-            # print("\n" + "#" * 30)
-            # print("mem: %.3fG" % (mem))
-            # print("#" * 30)
-            if mem > threshold:
-                threshold *= 1.1
-                if threshold > max_threshold:
-                    threshold = max_threshold
-                print('')
-                print("# pid:", pid)
-                print("# update threshold to %.3fG" % threshold)
-                print("# need more %.3fG" % (threshold-mem))
-                os.system("kill -19 %s" % pid)
-            time.sleep(3)
-
-    _task = Thread(target=run, args=[options], name="task")
-    _mem = Thread(target=mem_monitor, args=[pid, args.max_threshold], name="memory_monitor")
-    _task.start()
-    _mem.start()
-    _task.join()
-    _mem.join()
+    model = AttentionModel(options)
+    from mem_monitor import monitor
+    monitor(model, "train", pid, threshold=threshold, max_threshold=max_threshold, params=(data,))

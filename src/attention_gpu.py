@@ -296,40 +296,10 @@ if __name__ == "__main__":
             "is_summaries": args.is_summaries
         }
 
-    stop = False
     threshold = args.threshold
+    max_threshold = args.max_threshold
     pid = os.getpid()
 
-    def run(options):
-        global stop
-        model = AttentionModel(options)
-        model.train(data)
-        stop = True
-
-    def mem_monitor(pid, max_threshold):
-        import psutil
-        global threshold
-        global stop
-        while not stop:
-            p1 = psutil.Process(pid)
-            mem = p1.memory_full_info()[0] / 1024 ** 3
-            # print("\n" + "#" * 30)
-            # print("mem: %.3fG" % (mem))
-            # print("#" * 30)
-            if mem > threshold:
-                threshold *= 1.1
-                if threshold > max_threshold:
-                    threshold = max_threshold
-                print('')
-                print("# pid:", pid)
-                print("# update threshold to %.3fG" % threshold)
-                print("# need more %.3fG" % (threshold-mem))
-                os.system("kill -19 %s" % pid)
-            time.sleep(3)
-
-    _task = Thread(target=run, args=[options], name="task")
-    _mem = Thread(target=mem_monitor, args=[pid, args.max_threshold], name="memory_monitor")
-    _task.start()
-    _mem.start()
-    _task.join()
-    _mem.join()
+    model = AttentionModel(options)
+    from mem_monitor import monitor
+    monitor(model, "train", pid, threshold=threshold, max_threshold=max_threshold, params=(data))
