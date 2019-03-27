@@ -1,0 +1,59 @@
+{
+  '_cell': <tensorflow.contrib.seq2seq.python.ops.attention_wrapper.AttentionWrapper
+  object
+  at
+  0x7f65495a4e80>,
+  '_helper': <tensorflow.contrib.seq2seq.python.ops.helper.TrainingHelper
+  object
+  at
+  0x7f6548452d68>,
+  '_initial_state': AttentionWrapperState(cell_state=(LSTMStateTuple(c=<tf.Tensor
+  'encoder/rnn/while/Exit_3/Identity:0'
+  shape=(1000,
+  100)
+  dtype=float32>,
+  h=<tf.Tensor
+  'encoder/rnn/while/Exit_4/Identity:0'
+  shape=(1000,
+  100)
+  dtype=float32>),
+  LSTMStateTuple(c=<tf.Tensor
+  'encoder/rnn/while/Exit_5/Identity:0'
+  shape=(1000,
+  100)
+  dtype=float32>,
+  h=<tf.Tensor
+  'encoder/rnn/while/Exit_6/Identity:0'
+  shape=(1000,
+  100)
+  dtype=float32>)),
+  attention=<tf.Tensor
+  'decoder/AttentionWrapperZeroState/zeros_2:0'
+  shape=(1000,
+  100)
+  dtype=float32>,
+  time=<tf.Tensor
+  'decoder/AttentionWrapperZeroState/zeros_1:0'
+  shape=()
+  dtype=int32>,
+  alignments=<tf.Tensor
+  'decoder/AttentionWrapperZeroState/zeros/Identity:0'
+  shape=(1000,
+  ?
+  )
+  dtype=float32>,
+  alignment_history=<tensorflow.python.ops.tensor_array_ops.TensorArray
+  object
+  at
+  0x7f654838fcf8>,
+  attention_state=<tf.Tensor
+  'decoder/AttentionWrapperZeroState/zeros_3/Identity:0'
+  shape=(1000,
+  ?
+  )
+  dtype=float32>),
+  '_output_layer': <tensorflow.python.layers.core.Dense
+  object
+  at
+  0x7f6548444518>
+}
