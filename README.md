@@ -15,3 +15,4 @@
   - pandas
   - numpy
   - psutil
+  - joblib
