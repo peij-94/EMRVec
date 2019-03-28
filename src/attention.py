@@ -53,6 +53,7 @@ class AttentionModel:
 
 
     def getSession(self):
+        # init session
         sess = tf.Session()
         try:
             sess.run(tf.global_variables_initializer())
@@ -81,23 +82,33 @@ class AttentionModel:
             self.decoder_inputs_embedded = tf.nn.embedding_lookup(decoder_embedding, self.decoder_inputs)
 
             with tf.name_scope("encoder"):
+                # Multiple-layers LSTM Layer as Encoder
                 encoder_layers = [tf.nn.rnn_cell.BasicLSTMCell(self.options["cell_size"]) for _ in range(2)]
                 encoder = tf.nn.rnn_cell.MultiRNNCell(encoder_layers)
+                # encoder output
                 encoder_all_outputs, encoder_final_state = tf.nn.dynamic_rnn(encoder, self.encoder_inputs_embedded, sequence_length=self.encoder_length, dtype=tf.float32, time_major=False)
                 if self.is_summaries:
                     tf.summary.histogram('encoder_all_outputs', encoder_all_outputs)
 
             with tf.name_scope("decoder"):
+                # Multiple-layers LSTM Layer as Decoder
                 decoder_layers = [tf.nn.rnn_cell.BasicLSTMCell(self.options["cell_size"]) for _ in range(2)]
                 decoder_cell = tf.nn.rnn_cell.MultiRNNCell(decoder_layers)
+                # define attention algorithm
                 attention_mechanism = LuongAttention(num_units=self.options["cell_size"], memory=encoder_all_outputs, memory_sequence_length=self.encoder_length)
+                # connection of decoder & attention
                 attention_decoder = AttentionWrapper(cell=decoder_cell, attention_mechanism=attention_mechanism, alignment_history=True, output_attention=True)
+                # init the starting state of attention
                 attention_initial_state = attention_decoder.zero_state(tf.shape(self.encoder_inputs)[0], tf.float32).clone(cell_state=encoder_final_state)
+                # define decoder input
                 train_helper = TrainingHelper(self.decoder_inputs_embedded, self.decoder_length)
                 fc_layer = tf.layers.Dense(self.options["vocab_size"])
+                # define decoder
                 train_decoder = BasicDecoder(cell=attention_decoder, helper=train_helper, initial_state=attention_initial_state, output_layer=fc_layer)
+                # decoder output
                 logits, final_state, final_sequence_lengths = dynamic_decode(train_decoder)
                 decoder_logits = logits.rnn_output
+                # attention matric
                 self.train_attention_matrices = final_state.alignment_history.stack(name="train_attention_matrix")
                 if self.is_summaries:
                     tf.summary.histogram('decoder_logits', decoder_logits)
@@ -109,6 +120,7 @@ class AttentionModel:
                 mask = tf.sequence_mask(self.decoder_length, maxlen=maxlen, dtype=tf.float32, name="mask")
                 decoder_labels = tf.one_hot(self.decoder_targets, depth=self.options["vocab_size"], dtype=tf.int32, name="decoder_labels")
                 stepwise_cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=decoder_labels, logits=decoder_logits, name="cross_entropy")
+                # loss
                 _loss = tf.multiply(stepwise_cross_entropy, mask)
                 self.loss = tf.reduce_sum(_loss, name="loss")
                 optimizer = tf.train.AdadeltaOptimizer()
@@ -258,23 +270,6 @@ if __name__ == "__main__":
         types = pickle.load(open("../data/mseqs_types_by_patients.pkl", "rb"))
         args.vocab_size = len(types)
 
-        # types = []
-        # data = []
-        # for seq in tqdm(seqs):
-        #     tmp = []
-        #     for s in seq:
-        #         if len(s) < 3:
-        #             continue
-        #         _tmp = []
-        #         for _ in s:
-        #             if _ not in types:
-        #                 types[_] = len(types)
-        #             _tmp.append(types[_])
-        #         tmp.append(_tmp)
-        #     data.append(tmp)
-
-        # pickle.dump(types, open("../data/mseqs_code_by_patients.pkl", "wb"))
-        # pickle.dump(data, open("../data/mseqs_types_by_petients.pkl", "wb"))
     if args.datetime:
         options = json.load(
             open(os.path.join(MODELDIR, "attn_%s.model" % args.datetime, "attn_%s.params" % args.datetime), "r"))
