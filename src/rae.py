@@ -58,11 +58,8 @@ class RAE:
     def build_model(self, options):
         with self.graph.as_default():
             input = tf.placeholder(tf.float32, [None, options["max_seq_length"], options["inputSize"]], name="input")
-            # input = tf.transpose(input, perm=[1, 0, 2])
             inputLayer = tf.einsum("jkl,lm->jkm", input, self.L, name="inputLayer")
-            # inputLayer = tf.matmul(input, self.L)
             mask = tf.placeholder(tf.float32, [None, options["max_seq_length"] - 1], name="mask")
-            # mask = tf.transpose(mask, perm=[1, 0, 2])
 
             p = tf.nn.relu(
                 tf.nn.bias_add(tf.einsum("jl,lm->jm", tf.concat([inputLayer[:, 0], inputLayer[:, 1]], 1), self.W_1),
